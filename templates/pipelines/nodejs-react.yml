@@ -127,37 +127,18 @@ sonarqube-scan:
     GIT_DEPTH: "0"
   before_script:
     - apk add --no-cache curl
-    # Download jq
-    - curl -sL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /tmp/jq && chmod +x /tmp/jq
+    - 'curl -sL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /tmp/jq && chmod +x /tmp/jq'
     - export PATH="/tmp:$PATH"
-
-    # Authenticate with Vault
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-
-    - |
-      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
-      export SONAR_TOKEN
-      echo "SonarQube token retrieved"
+    - 'VAULT_TOKEN=$(curl -sk --request POST --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" ${VAULT_ADDR}/v1/auth/approle/login | jq -r ".auth.client_token")'
+    - export VAULT_TOKEN
+    - 'SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r ".data.data.ci_token")'
+    - export SONAR_TOKEN
+    - echo "SonarQube token retrieved"
   script:
     - echo "Running SonarQube analysis..."
-    - |
-      sonar-scanner \
-        -Dsonar.host.url=${SONAR_HOST_URL} \
-        -Dsonar.token=${SONAR_TOKEN} \
-        -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} \
-        -Dsonar.projectName="${CI_PROJECT_NAME}" \
-        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
-        -Dsonar.sources=src \
-        -Dsonar.tests=src \
-        -Dsonar.test.inclusions="**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.spec.js" \
-        -Dsonar.exclusions="**/node_modules/**,**/build/**,**/dist/**,**/.next/**,**/coverage/**" \
-        -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+    - 'sonar-scanner -Dsonar.host.url=${SONAR_HOST_URL} -Dsonar.token=${SONAR_TOKEN} -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} -Dsonar.projectName="${CI_PROJECT_NAME}" -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} -Dsonar.sources=src -Dsonar.tests=src -Dsonar.test.inclusions="**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.spec.js" -Dsonar.exclusions="**/node_modules/**,**/build/**,**/dist/**,**/.next/**,**/coverage/**" -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
     - echo "SonarQube analysis completed"
-    - echo "View results: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"
+    - 'echo "View results: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"'
   needs:
     - build
     - test
@@ -170,27 +151,17 @@ quality-gate:
   image: alpine:latest
   before_script:
     - apk add --no-cache curl jq
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-    - |
-      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
-      export SONAR_TOKEN
+    - 'VAULT_TOKEN=$(curl -sk --request POST --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" ${VAULT_ADDR}/v1/auth/approle/login | jq -r ".auth.client_token")'
+    - export VAULT_TOKEN
+    - 'SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r ".data.data.ci_token")'
+    - export SONAR_TOKEN
   script:
     - echo "Checking Quality Gate..."
     - sleep 10
-    - |
-      STATUS=$(curl -sk -u "${SONAR_TOKEN}:" \
-        "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${CI_PROJECT_PATH_SLUG}" \
-        | jq -r '.projectStatus.status')
-      echo "Quality Gate: ${STATUS}"
-      if [ "${STATUS}" != "OK" ] && [ "${STATUS}" != "WARN" ]; then
-        echo "Quality Gate FAILED!"
-        exit 1
-      fi
-      echo "Quality Gate PASSED!"
+    - 'STATUS=$(curl -sk -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${CI_PROJECT_PATH_SLUG}" | jq -r ".projectStatus.status")'
+    - 'echo "Quality Gate: ${STATUS}"'
+    - 'if [ "${STATUS}" != "OK" ] && [ "${STATUS}" != "WARN" ]; then echo "Quality Gate FAILED!"; exit 1; fi'
+    - echo "Quality Gate PASSED!"
   needs:
     - sonarqube-scan
   rules:
