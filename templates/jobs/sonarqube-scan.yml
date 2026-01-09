@@ -1,0 +1,118 @@
+# templates/jobs/sonarqube-scan.yml
+# SonarQube code quality analysis
+#
+# Prerequisites:
+#   - SONAR_HOST_URL: SonarQube server URL (CI/CD variable)
+#   - SONAR_TOKEN: Retrieved from Vault via vault-auth.yml
+#
+# Usage:
+#   sonarqube-scan:
+#     extends: .sonarqube-scan
+
+.sonarqube-scan:
+  stage: code-quality
+  image:
+    name: sonarsource/sonar-scanner-cli:5.0.1
+    entrypoint: [""]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"  # Full git history for better blame information
+  before_script:
+    - echo "Authenticating with Vault for SonarQube token..."
+
+    # Install dependencies
+    - apk add --no-cache curl jq
+
+    # Authenticate with Vault
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+
+      if [ "$VAULT_TOKEN" = "null" ] || [ -z "$VAULT_TOKEN" ]; then
+        echo "ERROR: Failed to authenticate with Vault"
+        exit 1
+      fi
+
+    # Fetch SonarQube token
+    - |
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+
+      if [ "$SONAR_TOKEN" = "null" ] || [ -z "$SONAR_TOKEN" ]; then
+        echo "ERROR: SonarQube token not found in Vault"
+        exit 1
+      fi
+
+      export SONAR_TOKEN
+      echo "SonarQube token retrieved successfully"
+
+  script:
+    - echo "Running SonarQube analysis..."
+    - echo "Project: ${CI_PROJECT_NAME}"
+    - echo "SonarQube URL: ${SONAR_HOST_URL}"
+
+    - |
+      sonar-scanner \
+        -Dsonar.host.url=${SONAR_HOST_URL} \
+        -Dsonar.token=${SONAR_TOKEN} \
+        -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} \
+        -Dsonar.projectName="${CI_PROJECT_NAME}" \
+        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
+        -Dsonar.sources=. \
+        -Dsonar.exclusions="**/node_modules/**,**/vendor/**,**/target/**,**/.git/**,**/build/**,**/dist/**,**/*.test.js,**/*.spec.js,**/*_test.go"
+
+    - echo "SonarQube analysis completed"
+    - echo "View results at: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# Java/Maven specific SonarQube scan
+.sonarqube-scan-maven:
+  stage: code-quality
+  image: maven:3.9-eclipse-temurin-21
+  variables:
+    MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+    MAVEN_CLI_OPTS: "--batch-mode --errors"
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update && apt-get install -y curl jq
+
+    # Authenticate with Vault
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+
+    - |
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+      export SONAR_TOKEN
+      echo "SonarQube token retrieved"
+
+  script:
+    - echo "Running SonarQube analysis for Maven project..."
+    - |
+      mvn ${MAVEN_CLI_OPTS} sonar:sonar \
+        -Dsonar.host.url=${SONAR_HOST_URL} \
+        -Dsonar.token=${SONAR_TOKEN} \
+        -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} \
+        -Dsonar.projectName="${CI_PROJECT_NAME}" \
+        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
+        -Dsonar.sources=src/main/java \
+        -Dsonar.tests=src/test/java \
+        -Dsonar.java.binaries=target/classes \
+        -Dsonar.java.test.binaries=target/test-classes \
+        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+        -Dsonar.junit.reportPaths=target/surefire-reports
+
+    - echo "SonarQube analysis completed"
+    - echo "View results at: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

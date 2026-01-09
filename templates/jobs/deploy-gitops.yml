@@ -1,0 +1,133 @@
+# templates/jobs/deploy-gitops.yml
+# GitOps deployment via ArgoCD
+#
+# Updates the image tag in k8s-manifests repository
+# ArgoCD automatically detects and syncs changes to Kubernetes
+#
+# Flow:
+#   1. Clone k8s-manifests repo
+#   2. Update image tag in deployment.yaml
+#   3. Commit and push
+#   4. ArgoCD auto-syncs to Kubernetes
+#
+# Usage:
+#   deploy-dev:
+#     extends: .deploy-gitops-dev
+#
+#   deploy-prod:
+#     extends: .deploy-gitops-prod
+
+variables:
+  # GitLab internal URL (for pod-to-pod communication)
+  MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+  REGISTRY_HOST: "gitlab:5050"
+
+# Base GitOps deployment template
+.deploy-gitops:
+  stage: deploy
+  image: alpine/git:latest
+  variables:
+    # Override in extending job
+    ENVIRONMENT: "development"
+  before_script:
+    - apk add --no-cache curl jq
+
+    # Authenticate with Vault to get GitLab deploy token
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+
+      if [ "$VAULT_TOKEN" = "null" ] || [ -z "$VAULT_TOKEN" ]; then
+        echo "ERROR: Failed to authenticate with Vault"
+        exit 1
+      fi
+
+    # Fetch GitLab deploy token from Vault
+    - |
+      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
+
+      if [ "$GITLAB_DEPLOY_TOKEN" = "null" ] || [ -z "$GITLAB_DEPLOY_TOKEN" ]; then
+        echo "ERROR: GitLab deploy token not found in Vault"
+        exit 1
+      fi
+
+      export GITLAB_DEPLOY_TOKEN
+      echo "GitLab deploy token retrieved"
+
+  script:
+    - echo "Deploying ${CI_PROJECT_NAME} to ${ENVIRONMENT}..."
+    - echo "Image: ${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+
+    # Clone k8s-manifests repository
+    - |
+      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}" | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
+      git clone "${REPO_URL_WITH_AUTH}" k8s-manifests
+      cd k8s-manifests
+
+    # Configure git
+    - git config user.email "gitlab-ci@daitics.local"
+    - git config user.name "GitLab CI"
+
+    # Check if manifest exists
+    - |
+      MANIFEST_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
+      if [ ! -f "$MANIFEST_PATH" ]; then
+        echo "WARNING: Manifest not found at ${MANIFEST_PATH}"
+        echo "Creating directory structure..."
+        mkdir -p "environments/${ENVIRONMENT}/${CI_PROJECT_NAME}"
+        echo "Please create deployment manifests in k8s-manifests repo"
+        exit 0
+      fi
+
+    # Update image tag in deployment manifest
+    - |
+      NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+      echo "Updating image to: ${NEW_IMAGE}"
+
+      # Update image tag (handles various image line formats)
+      sed -i "s|image:.*${CI_PROJECT_NAME}.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}" || \
+      sed -i "s|image:.*/${CI_PROJECT_PATH}:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
+
+    # Commit and push changes
+    - |
+      git add .
+      git diff --cached --quiet && echo "No changes to commit" && exit 0
+
+      git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}
+
+      Pipeline: ${CI_PIPELINE_URL}
+      Commit: ${CI_COMMIT_SHA}
+      Branch: ${CI_COMMIT_REF_NAME}"
+
+      git push
+
+    - echo "Deployment manifest updated successfully"
+    - echo "ArgoCD will automatically sync the changes"
+    - echo "Monitor at: https://argocd.service.daitics.local"
+
+# Development deployment - AUTOMATIC (no approval)
+.deploy-gitops-dev:
+  extends: .deploy-gitops
+  variables:
+    ENVIRONMENT: "development"
+  environment:
+    name: development
+    url: https://dev-${CI_PROJECT_NAME}.service.daitics.local
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: on_success  # Automatic deployment
+
+# Production deployment - MANUAL APPROVAL REQUIRED
+.deploy-gitops-prod:
+  extends: .deploy-gitops
+  variables:
+    ENVIRONMENT: "production"
+  environment:
+    name: production
+    url: https://${CI_PROJECT_NAME}.service.daitics.local
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+      when: manual      # Requires clicking "Play" button
+  allow_failure: false

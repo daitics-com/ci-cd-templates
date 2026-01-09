@@ -1,0 +1,192 @@
+# templates/utils/github-status-reporter.yml
+# GitHub Status Reporter
+#
+# Reports GitLab CI pipeline status to GitHub Pull Requests
+# This enables GitHub branch protection to require CI checks to pass
+#
+# Prerequisites:
+#   - GITHUB_REPO: "owner/repo" format (CI/CD variable)
+#   - GitHub access token stored in Vault: secret/cicd/github (key: access_token)
+#
+# Usage:
+#   include:
+#     - project: 'infrastructure/ci-cd-templates'
+#       file: '/templates/utils/github-status-reporter.yml'
+#
+#   my_job:
+#     extends: .github-status-reporter
+#     script:
+#       - npm test
+
+# Base template for GitHub authentication
+.github-auth:
+  before_script:
+    - |
+      if [ -z "$GITHUB_REPO" ]; then
+        echo "GITHUB_REPO not set, skipping GitHub status update"
+        exit 0
+      fi
+
+    # Install dependencies
+    - |
+      if ! command -v curl &> /dev/null; then
+        apk add --no-cache curl jq 2>/dev/null || apt-get update -qq && apt-get install -y curl jq 2>/dev/null || true
+      fi
+
+    # Authenticate with Vault
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+
+      if [ "$VAULT_TOKEN" = "null" ] || [ -z "$VAULT_TOKEN" ]; then
+        echo "WARNING: Failed to authenticate with Vault"
+        exit 0
+      fi
+
+    # Fetch GitHub access token from Vault
+    - |
+      GITHUB_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/github | jq -r '.data.data.access_token')
+
+      if [ "$GITHUB_TOKEN" = "null" ] || [ -z "$GITHUB_TOKEN" ]; then
+        echo "WARNING: GitHub token not found in Vault"
+        exit 0
+      fi
+
+      export GITHUB_TOKEN
+      echo "GitHub token retrieved"
+
+# Report pending status
+.github-status-pending:
+  extends: .github-auth
+  after_script:
+    - |
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_TOKEN" ]; then
+        JOB_CONTEXT="ci/gitlab/${CI_JOB_STAGE}/${CI_JOB_NAME}"
+
+        curl -sX POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{
+            \"state\": \"pending\",
+            \"target_url\": \"${CI_PIPELINE_URL}\",
+            \"description\": \"Pipeline running...\",
+            \"context\": \"${JOB_CONTEXT}\"
+          }" \
+          "https://api.github.com/repos/${GITHUB_REPO}/statuses/${CI_COMMIT_SHA}" || true
+
+        echo "GitHub status: pending"
+      fi
+
+# Report success status
+.github-status-success:
+  extends: .github-auth
+  after_script:
+    - |
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_TOKEN" ]; then
+        JOB_CONTEXT="ci/gitlab/${CI_JOB_STAGE}/${CI_JOB_NAME}"
+
+        curl -sX POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{
+            \"state\": \"success\",
+            \"target_url\": \"${CI_JOB_URL}\",
+            \"description\": \"Passed\",
+            \"context\": \"${JOB_CONTEXT}\"
+          }" \
+          "https://api.github.com/repos/${GITHUB_REPO}/statuses/${CI_COMMIT_SHA}" || true
+
+        echo "GitHub status: success"
+      fi
+
+# Report failure status
+.github-status-failure:
+  extends: .github-auth
+  after_script:
+    - |
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_TOKEN" ]; then
+        JOB_CONTEXT="ci/gitlab/${CI_JOB_STAGE}/${CI_JOB_NAME}"
+
+        curl -sX POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{
+            \"state\": \"failure\",
+            \"target_url\": \"${CI_JOB_URL}\",
+            \"description\": \"Failed - click for details\",
+            \"context\": \"${JOB_CONTEXT}\"
+          }" \
+          "https://api.github.com/repos/${GITHUB_REPO}/statuses/${CI_COMMIT_SHA}" || true
+
+        echo "GitHub status: failure"
+      fi
+
+# Unified reporter - automatically reports based on job outcome
+.github-status-reporter:
+  extends: .github-auth
+  before_script:
+    # Run base authentication first
+    - !reference [.github-auth, before_script]
+    # Report pending status
+    - |
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_TOKEN" ]; then
+        JOB_CONTEXT="ci/gitlab/${CI_JOB_STAGE}/${CI_JOB_NAME}"
+
+        curl -sX POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{\"state\":\"pending\",\"target_url\":\"${CI_PIPELINE_URL}\",\"description\":\"Running...\",\"context\":\"${JOB_CONTEXT}\"}" \
+          "https://api.github.com/repos/${GITHUB_REPO}/statuses/${CI_COMMIT_SHA}" 2>/dev/null || true
+      fi
+
+  after_script:
+    - |
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_TOKEN" ]; then
+        JOB_CONTEXT="ci/gitlab/${CI_JOB_STAGE}/${CI_JOB_NAME}"
+
+        # Determine job status
+        if [ "$CI_JOB_STATUS" = "success" ]; then
+          STATE="success"
+          DESCRIPTION="Passed"
+        else
+          STATE="failure"
+          DESCRIPTION="Failed - click for details"
+        fi
+
+        # Update status
+        curl -sX POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -d "{\"state\":\"${STATE}\",\"target_url\":\"${CI_JOB_URL}\",\"description\":\"${DESCRIPTION}\",\"context\":\"${JOB_CONTEXT}\"}" \
+          "https://api.github.com/repos/${GITHUB_REPO}/statuses/${CI_COMMIT_SHA}" 2>/dev/null || true
+
+        echo "GitHub status updated: ${STATE}"
+      fi
+
+# =============================================================================
+# GitHub Branch Protection Setup Guide
+# =============================================================================
+#
+# To require GitLab CI checks before merging PRs in GitHub:
+#
+# 1. Go to GitHub → Repository → Settings → Branches
+#
+# 2. Add branch protection rule for 'main' (or 'master'):
+#    - Branch name pattern: main
+#
+# 3. Enable these settings:
+#    ✅ Require a pull request before merging
+#    ✅ Require status checks to pass before merging
+#       - Search and select:
+#         - ci/gitlab/build/build
+#         - ci/gitlab/test/test
+#         - ci/gitlab/code-quality/sonarqube-scan
+#         - ci/gitlab/code-quality/quality-gate
+#    ✅ Require branches to be up to date before merging
+#    ✅ Do not allow bypassing the above settings
+#
+# 4. Repeat for 'develop' branch if needed
+#
+# Now PRs cannot be merged unless all CI checks pass!

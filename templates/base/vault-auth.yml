@@ -1,0 +1,78 @@
+# templates/base/vault-auth.yml
+# Vault AppRole authentication template
+#
+# Prerequisites:
+#   - VAULT_ADDR: Vault server URL (CI/CD variable)
+#   - VAULT_ROLE_ID: AppRole Role ID (protected CI/CD variable)
+#   - VAULT_SECRET_ID: AppRole Secret ID (protected CI/CD variable)
+#
+# Usage:
+#   my_job:
+#     extends: .vault-auth
+#     script:
+#       - echo "SONAR_TOKEN is now available: ${SONAR_TOKEN:0:10}..."
+
+.vault-auth:
+  before_script:
+    - echo "Authenticating with Vault..."
+
+    # Install dependencies if not present
+    - |
+      if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
+        apk add --no-cache curl jq 2>/dev/null || \
+        apt-get update -qq && apt-get install -y -qq curl jq 2>/dev/null || \
+        yum install -y curl jq 2>/dev/null || true
+      fi
+
+    # Validate required variables
+    - |
+      if [ -z "$VAULT_ADDR" ] || [ -z "$VAULT_ROLE_ID" ] || [ -z "$VAULT_SECRET_ID" ]; then
+        echo "ERROR: Missing Vault configuration variables"
+        echo "Required: VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID"
+        exit 1
+      fi
+
+    # Authenticate with Vault using AppRole
+    - |
+      VAULT_RESPONSE=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login)
+
+      VAULT_TOKEN=$(echo "$VAULT_RESPONSE" | jq -r '.auth.client_token')
+
+      if [ "$VAULT_TOKEN" = "null" ] || [ -z "$VAULT_TOKEN" ]; then
+        echo "ERROR: Failed to authenticate with Vault"
+        echo "Response: $VAULT_RESPONSE"
+        exit 1
+      fi
+
+      export VAULT_TOKEN
+      echo "Vault authentication successful"
+
+    # Fetch SonarQube token from Vault
+    - |
+      SONAR_RESPONSE=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube)
+
+      SONAR_TOKEN=$(echo "$SONAR_RESPONSE" | jq -r '.data.data.ci_token')
+
+      if [ "$SONAR_TOKEN" != "null" ] && [ -n "$SONAR_TOKEN" ]; then
+        export SONAR_TOKEN
+        echo "SonarQube token retrieved"
+      else
+        echo "WARNING: SonarQube token not found in Vault"
+      fi
+
+    # Fetch GitLab deploy token from Vault (for GitOps)
+    - |
+      GITLAB_RESPONSE=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab 2>/dev/null)
+
+      GITLAB_DEPLOY_TOKEN=$(echo "$GITLAB_RESPONSE" | jq -r '.data.data.deploy_token' 2>/dev/null)
+
+      if [ "$GITLAB_DEPLOY_TOKEN" != "null" ] && [ -n "$GITLAB_DEPLOY_TOKEN" ]; then
+        export GITLAB_DEPLOY_TOKEN
+        echo "GitLab deploy token retrieved"
+      fi
+
+    - echo "Vault secrets loaded successfully"

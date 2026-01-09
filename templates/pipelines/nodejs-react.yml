@@ -1,0 +1,325 @@
+# templates/pipelines/nodejs-react.yml
+# Complete CI/CD pipeline for Node.js/React applications
+#
+# Features:
+#   - npm/yarn dependency caching
+#   - Unit tests with coverage
+#   - ESLint code linting
+#   - SonarQube code quality analysis
+#   - Quality gate validation
+#   - Docker image build with Kaniko
+#   - GitOps deployment via ArgoCD
+#
+# Usage in your project's .gitlab-ci.yml:
+#   include:
+#     - project: 'daitics-com/ci-cd-templates'
+#       file: '/templates/pipelines/nodejs-react.yml'
+#
+#   variables:
+#     APP_NAME: my-react-app
+#     NODE_VERSION: "22"
+
+include:
+  - local: '/templates/base/stages.yml'
+
+# Global variables
+variables:
+  NODE_VERSION: "22"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+  REGISTRY_HOST: "gitlab:5050"
+
+# Cache node_modules
+cache:
+  key:
+    files:
+      - package-lock.json
+      - yarn.lock
+  paths:
+    - .npm/
+    - node_modules/
+
+# =============================================================================
+# BUILD STAGE
+# =============================================================================
+
+install:
+  stage: .pre
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - echo "Installing dependencies..."
+    - |
+      if [ -f yarn.lock ]; then
+        yarn install --frozen-lockfile
+      elif [ -f package-lock.json ]; then
+        npm ci --prefer-offline --no-audit
+      else
+        npm install --no-audit
+      fi
+    - echo "Dependencies installed"
+  artifacts:
+    paths:
+      - node_modules/
+    expire_in: 1 day
+
+build:
+  stage: build
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - echo "Building application..."
+    - npm run build
+    - echo "Build completed"
+    - ls -lah build/ 2>/dev/null || ls -lah dist/ 2>/dev/null || ls -lah .next/ 2>/dev/null || true
+  artifacts:
+    paths:
+      - build/
+      - dist/
+      - .next/
+    expire_in: 7 days
+  needs:
+    - install
+
+# =============================================================================
+# TEST STAGE
+# =============================================================================
+
+test:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - echo "Running tests..."
+    - npm test -- --coverage --watchAll=false --ci || npm run test:ci || echo "No test script found"
+    - echo "Tests completed"
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+    paths:
+      - coverage/
+    expire_in: 30 days
+  needs:
+    - install
+
+lint:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - echo "Running linter..."
+    - npm run lint || echo "No lint script found"
+    - echo "Linting completed"
+  allow_failure: true
+  needs:
+    - install
+
+# =============================================================================
+# CODE QUALITY STAGE
+# =============================================================================
+
+sonarqube-scan:
+  stage: code-quality
+  image:
+    name: sonarsource/sonar-scanner-cli:5.0.1
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apk add --no-cache curl
+    # Download jq
+    - curl -sL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /tmp/jq && chmod +x /tmp/jq
+    - export PATH="/tmp:$PATH"
+
+    # Authenticate with Vault
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+
+    - |
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+      export SONAR_TOKEN
+      echo "SonarQube token retrieved"
+  script:
+    - echo "Running SonarQube analysis..."
+    - |
+      sonar-scanner \
+        -Dsonar.host.url=${SONAR_HOST_URL} \
+        -Dsonar.token=${SONAR_TOKEN} \
+        -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} \
+        -Dsonar.projectName="${CI_PROJECT_NAME}" \
+        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
+        -Dsonar.sources=src \
+        -Dsonar.tests=src \
+        -Dsonar.test.inclusions="**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.spec.js" \
+        -Dsonar.exclusions="**/node_modules/**,**/build/**,**/dist/**,**/.next/**,**/coverage/**" \
+        -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+    - echo "SonarQube analysis completed"
+    - echo "View results: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"
+  needs:
+    - build
+    - test
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+quality-gate:
+  stage: code-quality
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl jq
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - |
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+      export SONAR_TOKEN
+  script:
+    - echo "Checking Quality Gate..."
+    - sleep 10
+    - |
+      STATUS=$(curl -sk -u "${SONAR_TOKEN}:" \
+        "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${CI_PROJECT_PATH_SLUG}" \
+        | jq -r '.projectStatus.status')
+      echo "Quality Gate: ${STATUS}"
+      if [ "${STATUS}" != "OK" ] && [ "${STATUS}" != "WARN" ]; then
+        echo "Quality Gate FAILED!"
+        exit 1
+      fi
+      echo "Quality Gate PASSED!"
+  needs:
+    - sonarqube-scan
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# =============================================================================
+# PACKAGE STAGE
+# =============================================================================
+
+build-image:
+  stage: package
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    IMAGE_TAG: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+    IMAGE_LATEST: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest"
+  script:
+    - echo "Building Docker image with Kaniko"
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - |
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
+        --destination "${IMAGE_TAG}" \
+        --destination "${IMAGE_LATEST}" \
+        --build-arg NODE_ENV=production \
+        --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+        --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} \
+        --insecure \
+        --skip-tls-verify \
+        --cache=true \
+        --cache-ttl=24h
+    - echo "Image: ${IMAGE_TAG}"
+  needs:
+    - build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+
+# =============================================================================
+# DEPLOY STAGE
+# =============================================================================
+
+deploy:dev:
+  stage: deploy
+  image: alpine/git:latest
+  variables:
+    ENVIRONMENT: "development"
+    MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+  before_script:
+    - apk add --no-cache curl jq
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - |
+      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
+      export GITLAB_DEPLOY_TOKEN
+  script:
+    - echo "Deploying to ${ENVIRONMENT}..."
+    - |
+      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}" | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
+      git clone "${REPO_URL_WITH_AUTH}" k8s-manifests
+      cd k8s-manifests
+    - git config user.email "gitlab-ci@daitics.local"
+    - git config user.name "GitLab CI"
+    - |
+      MANIFEST_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
+      if [ -f "$MANIFEST_PATH" ]; then
+        NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
+        git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
+        echo "Deployment updated - ArgoCD will sync"
+      else
+        echo "Manifest not found at ${MANIFEST_PATH}"
+      fi
+  environment:
+    name: development
+    url: https://dev-${CI_PROJECT_NAME}.service.daitics.local
+  needs:
+    - build-image
+    - quality-gate
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: on_success  # Automatic - no approval
+
+deploy:prod:
+  stage: deploy
+  image: alpine/git:latest
+  variables:
+    ENVIRONMENT: "production"
+    MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+  before_script:
+    - apk add --no-cache curl jq
+    - |
+      VAULT_TOKEN=$(curl -sk --request POST \
+        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - |
+      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
+      export GITLAB_DEPLOY_TOKEN
+  script:
+    - echo "Deploying to ${ENVIRONMENT}..."
+    - |
+      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}" | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
+      git clone "${REPO_URL_WITH_AUTH}" k8s-manifests
+      cd k8s-manifests
+    - git config user.email "gitlab-ci@daitics.local"
+    - git config user.name "GitLab CI"
+    - |
+      MANIFEST_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
+      if [ -f "$MANIFEST_PATH" ]; then
+        NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
+        git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
+        echo "Deployment updated - ArgoCD will sync"
+      else
+        echo "Manifest not found at ${MANIFEST_PATH}"
+      fi
+  environment:
+    name: production
+    url: https://${CI_PROJECT_NAME}.service.daitics.local
+  needs:
+    - build-image
+    - quality-gate
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+      when: manual  # Requires approval

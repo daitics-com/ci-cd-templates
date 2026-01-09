@@ -1,0 +1,96 @@
+# templates/jobs/test-unit.yml
+# Unit testing template with coverage reporting
+#
+# Usage:
+#   test:
+#     extends: .test-unit
+#     variables:
+#       TEST_COMMAND: "npm test -- --coverage"
+
+.test-unit:
+  stage: test
+  variables:
+    # Override in your pipeline
+    TEST_COMMAND: "echo 'Override TEST_COMMAND variable'"
+  script:
+    - echo "Running unit tests..."
+    - eval "${TEST_COMMAND}"
+    - echo "Unit tests completed"
+  coverage: '/Coverage:\s*(\d+\.?\d*)%/'
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - "**/junit.xml"
+        - "**/TEST-*.xml"
+        - "**/surefire-reports/TEST-*.xml"
+      coverage_report:
+        coverage_format: cobertura
+        path: "**/coverage.xml"
+    paths:
+      - coverage/
+      - target/site/jacoco/
+      - target/surefire-reports/
+    expire_in: 30 days
+
+# Java/Maven specific test template
+.test-unit-maven:
+  extends: .test-unit
+  variables:
+    MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+    MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end"
+  script:
+    - echo "Running Maven unit tests..."
+    - mvn ${MAVEN_CLI_OPTS} test
+    - echo "Unit tests completed"
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: target/site/cobertura/coverage.xml
+    paths:
+      - target/surefire-reports/
+      - target/site/jacoco/
+    expire_in: 30 days
+
+# Node.js specific test template
+.test-unit-nodejs:
+  extends: .test-unit
+  script:
+    - echo "Running Node.js unit tests..."
+    - npm test -- --coverage --watchAll=false --ci
+    - echo "Unit tests completed"
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+    paths:
+      - coverage/
+    expire_in: 30 days
+
+# Python specific test template
+.test-unit-python:
+  extends: .test-unit
+  script:
+    - echo "Running Python unit tests..."
+    - pip install pytest pytest-cov
+    - pytest --cov=. --cov-report=xml --cov-report=html --junitxml=junit.xml
+    - echo "Unit tests completed"
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - htmlcov/
+    expire_in: 30 days

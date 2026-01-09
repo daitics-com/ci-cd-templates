@@ -1,0 +1,14 @@
+# templates/base/stages.yml
+# Standard pipeline stages for all DAITICS applications
+#
+# Usage:
+#   include:
+#     - project: 'infrastructure/ci-cd-templates'
+#       file: '/templates/base/stages.yml'
+
+stages:
+  - build
+  - test
+  - code-quality
+  - package
+  - deploy

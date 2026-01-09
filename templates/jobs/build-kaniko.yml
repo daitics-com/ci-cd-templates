@@ -1,0 +1,60 @@
+# templates/jobs/build-kaniko.yml
+# Docker image build using Kaniko (no Docker-in-Docker required)
+#
+# Benefits:
+#   - No privileged mode required (enhanced security)
+#   - No Docker daemon needed (daemonless architecture)
+#   - Built-in layer caching for faster builds
+#   - Works in restricted Kubernetes environments
+#
+# Usage:
+#   build-image:
+#     extends: .build-kaniko
+#     variables:
+#       DOCKERFILE: Dockerfile
+#       BUILD_CONTEXT: .
+
+.build-kaniko:
+  stage: package
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    # Override these in your pipeline
+    DOCKERFILE: Dockerfile
+    BUILD_CONTEXT: "${CI_PROJECT_DIR}"
+    # Internal registry (GitLab Container Registry)
+    REGISTRY_HOST: "gitlab:5050"
+    IMAGE_TAG: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+    IMAGE_LATEST: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest"
+  script:
+    - echo "Building Docker image with Kaniko"
+    - echo "Registry Host: ${REGISTRY_HOST}"
+    - echo "Image Tag: ${IMAGE_TAG}"
+    - echo "Dockerfile: ${DOCKERFILE}"
+
+    # Setup registry authentication
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+
+    # Build and push image
+    - |
+      /kaniko/executor \
+        --context "${BUILD_CONTEXT}" \
+        --dockerfile "${BUILD_CONTEXT}/${DOCKERFILE}" \
+        --destination "${IMAGE_TAG}" \
+        --destination "${IMAGE_LATEST}" \
+        --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+        --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} \
+        --build-arg VERSION=${CI_COMMIT_REF_NAME} \
+        --insecure \
+        --skip-tls-verify \
+        --cache=true \
+        --cache-ttl=24h
+
+    - echo "Image built and pushed successfully"
+    - echo "Available at: ${IMAGE_TAG}"
+    - echo "Available at: ${IMAGE_LATEST}"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
