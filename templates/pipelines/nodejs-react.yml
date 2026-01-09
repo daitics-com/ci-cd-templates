@@ -190,28 +190,18 @@ build-image:
   stage: package
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
+    entrypoint:
+      - ""
   variables:
-    IMAGE_TAG: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
-    IMAGE_LATEST: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest"
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+    REGISTRY_HOST: gitlab:5050
   script:
     - echo "Building Docker image with Kaniko"
     - mkdir -p /kaniko/.docker
-    - echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
-    - |
-      /kaniko/executor \
-        --context "${CI_PROJECT_DIR}" \
-        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
-        --destination "${IMAGE_TAG}" \
-        --destination "${IMAGE_LATEST}" \
-        --build-arg NODE_ENV=production \
-        --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-        --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} \
-        --insecure \
-        --skip-tls-verify \
-        --cache=true \
-        --cache-ttl=24h
-    - echo "Image: ${IMAGE_TAG}"
+    - echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"`printf \"%s:%s\" \"${CI_REGISTRY_USER}\" \"${CI_REGISTRY_PASSWORD}\" | base64 | tr -d '\n'`\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Dockerfile" --destination "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}" --destination "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest" --build-arg NODE_ENV=production --build-arg BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} --insecure --skip-tls-verify --cache=true --cache-ttl=24h
+    - echo "Image built and pushed successfully"
   needs:
     - build
   rules:
