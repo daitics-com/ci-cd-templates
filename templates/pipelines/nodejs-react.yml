@@ -129,15 +129,27 @@ sonarqube-scan:
     - apk add --no-cache curl
     - curl -sL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /tmp/jq && chmod +x /tmp/jq
     - export PATH="/tmp:$PATH"
-    - echo "Authenticating with Vault..."
+    - echo "=== Environment Variables Check ==="
+    - 'echo "VAULT_ADDR: ${VAULT_ADDR:-NOT_SET}"'
+    - 'echo "VAULT_ROLE_ID: ${VAULT_ROLE_ID:+SET}"'
+    - 'echo "VAULT_SECRET_ID: ${VAULT_SECRET_ID:+SET}"'
+    - 'echo "SONAR_HOST_URL: ${SONAR_HOST_URL:-NOT_SET}"'
+    - echo "=== Testing Vault Connectivity ==="
+    - 'HEALTH_RESPONSE=$(curl -sk ${VAULT_ADDR}/v1/sys/health 2>&1) && echo "Vault health: $HEALTH_RESPONSE" || echo "Vault connectivity FAILED: $HEALTH_RESPONSE"'
+    - echo "=== Authenticating with Vault ==="
     - VAULT_RESPONSE=$(curl -sk --request POST --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" ${VAULT_ADDR}/v1/auth/approle/login)
+    - 'echo "Vault response length: ${#VAULT_RESPONSE} chars"'
+    - 'echo "Vault response preview: ${VAULT_RESPONSE:0:100}"'
     - VAULT_TOKEN=$(echo $VAULT_RESPONSE | jq -r '.auth.client_token')
+    - 'if [ "$VAULT_TOKEN" = "null" ] || [ -z "$VAULT_TOKEN" ]; then echo "ERROR: Failed to get Vault token"; echo "Full response: $VAULT_RESPONSE"; exit 1; fi'
     - export VAULT_TOKEN
-    - echo "Fetching SonarQube token..."
+    - echo "Vault token retrieved successfully"
+    - echo "=== Fetching SonarQube token ==="
     - SONAR_RESPONSE=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}" ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube)
     - SONAR_TOKEN=$(echo $SONAR_RESPONSE | jq -r '.data.data.ci_token')
+    - 'if [ "$SONAR_TOKEN" = "null" ] || [ -z "$SONAR_TOKEN" ]; then echo "ERROR: Failed to get SonarQube token"; exit 1; fi'
     - export SONAR_TOKEN
-    - echo "SonarQube token retrieved"
+    - echo "SonarQube token retrieved successfully"
   script:
     - echo "Running SonarQube analysis..."
     - |
