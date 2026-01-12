@@ -26,7 +26,7 @@ include:
 variables:
   NODE_VERSION: "22"
   NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
-  REGISTRY_HOST: "gitlab:5050"
+  REGISTRY_HOST: "gitlab-registry.gitlab-system.svc.cluster.local:5000"
 
 # Cache node_modules
 cache:
@@ -207,7 +207,6 @@ build-image:
   variables:
     IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
     IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
-    REGISTRY_HOST: gitlab:5050
   script:
     - echo "Building Docker image with Kaniko"
     - mkdir -p /kaniko/.docker
