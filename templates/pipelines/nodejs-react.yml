@@ -254,13 +254,10 @@ deploy:dev:
       if [ -f "$KUSTOMIZE_PATH" ]; then
         echo "Found Kustomize structure at ${KUSTOMIZE_PATH}"
         cd apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}
-        if grep -q "^images:" kustomization.yaml; then
-          sed -i '/^images:/,/^[^ ]/{ /^images:/d; /^  - /d; /^    /d; }' kustomization.yaml
-        fi
-        echo "" >> kustomization.yaml
-        echo "images:" >> kustomization.yaml
-        echo "  - name: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
-        echo "    newTag: \"${CI_COMMIT_SHORT_SHA}\"" >> kustomization.yaml
+        # Simply update the newTag value - images section already exists
+        sed -i 's/newTag: ".*"/newTag: "'"${CI_COMMIT_SHORT_SHA}"'"/' kustomization.yaml
+        echo "Updated kustomization.yaml with tag: ${CI_COMMIT_SHORT_SHA}"
+        cat kustomization.yaml
         cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
         echo "Kustomize manifest updated - ArgoCD will sync"
@@ -317,13 +314,10 @@ deploy:prod:
       if [ -f "$KUSTOMIZE_PATH" ]; then
         echo "Found Kustomize structure at ${KUSTOMIZE_PATH}"
         cd apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}
-        if grep -q "^images:" kustomization.yaml; then
-          sed -i '/^images:/,/^[^ ]/{ /^images:/d; /^  - /d; /^    /d; }' kustomization.yaml
-        fi
-        echo "" >> kustomization.yaml
-        echo "images:" >> kustomization.yaml
-        echo "  - name: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
-        echo "    newTag: \"${CI_COMMIT_SHORT_SHA}\"" >> kustomization.yaml
+        # Simply update the newTag value - images section already exists
+        sed -i 's/newTag: ".*"/newTag: "'"${CI_COMMIT_SHORT_SHA}"'"/' kustomization.yaml
+        echo "Updated kustomization.yaml with tag: ${CI_COMMIT_SHORT_SHA}"
+        cat kustomization.yaml
         cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
         echo "Kustomize manifest updated - ArgoCD will sync"
