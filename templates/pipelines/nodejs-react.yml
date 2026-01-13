@@ -259,8 +259,7 @@ deploy:dev:
         fi
         echo "" >> kustomization.yaml
         echo "images:" >> kustomization.yaml
-        echo "  - name: ${CI_PROJECT_NAME}" >> kustomization.yaml
-        echo "    newName: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
+        echo "  - name: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
         echo "    newTag: \"${CI_COMMIT_SHORT_SHA}\"" >> kustomization.yaml
         cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
@@ -323,8 +322,7 @@ deploy:prod:
         fi
         echo "" >> kustomization.yaml
         echo "images:" >> kustomization.yaml
-        echo "  - name: ${CI_PROJECT_NAME}" >> kustomization.yaml
-        echo "    newName: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
+        echo "  - name: ${REGISTRY_HOST}/${CI_PROJECT_PATH}" >> kustomization.yaml
         echo "    newTag: \"${CI_COMMIT_SHORT_SHA}\"" >> kustomization.yaml
         cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
