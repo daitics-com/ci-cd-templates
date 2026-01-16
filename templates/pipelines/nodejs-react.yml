@@ -26,6 +26,10 @@ include:
 variables:
   NODE_VERSION: "22"
   NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+  # Use external URL for CI/CD (via APISIX NodePort)
+  # CI job pods use hostAliases (192.168.100.20) for DNS resolution
+  # Worker nodes use /etc/hosts (192.168.100.20) for Docker image pulls
+  # This ensures same registry path for push AND pull operations
   REGISTRY_HOST: "gitlab-registry.service.daitics.local:30443"
 
 # Cache node_modules
