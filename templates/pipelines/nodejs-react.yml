@@ -231,7 +231,11 @@ deploy:dev:
   image: alpine/git:latest
   variables:
     ENVIRONMENT: "development"
+    NAMESPACE: "daitics-development"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
+    APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
+    APP_HOST: "dev-${CI_PROJECT_NAME}.service.daitics.local"
   before_script:
     - apk add --no-cache curl jq
     - |
@@ -276,6 +280,47 @@ deploy:dev:
         echo "  - Legacy: ${LEGACY_PATH}"
         exit 1
       fi
+    # Create/Update APISIX route for this application
+    - |
+      echo "Creating APISIX route for ${APP_HOST}..."
+      ROUTE_ID="${CI_PROJECT_NAME}-${ENVIRONMENT}"
+      UPSTREAM_HOST="${CI_PROJECT_NAME}.${NAMESPACE}.svc.cluster.local"
+
+      # Create the route with upstream
+      ROUTE_PAYLOAD=$(cat <<ROUTE_EOF
+      {
+        "uri": "/*",
+        "host": "${APP_HOST}",
+        "plugins": {
+          "proxy-rewrite": {
+            "headers": {
+              "X-Forwarded-Proto": "https",
+              "X-Forwarded-Host": "${APP_HOST}",
+              "X-Forwarded-Port": "443"
+            }
+          }
+        },
+        "upstream": {
+          "type": "roundrobin",
+          "nodes": {
+            "${UPSTREAM_HOST}:80": 1
+          }
+        }
+      }
+      ROUTE_EOF
+      )
+
+      RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${ROUTE_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${ROUTE_PAYLOAD}")
+
+      if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "APISIX route created/updated successfully: ${ROUTE_ID}"
+        echo "App accessible at: https://${APP_HOST}"
+      else
+        echo "Warning: Failed to create APISIX route: $RESPONSE"
+      fi
   environment:
     name: development
     url: https://dev-${CI_PROJECT_NAME}.service.daitics.local
@@ -291,7 +336,11 @@ deploy:prod:
   image: alpine/git:latest
   variables:
     ENVIRONMENT: "production"
+    NAMESPACE: "daitics-production"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
+    APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
+    APP_HOST: "${CI_PROJECT_NAME}.service.daitics.local"
   before_script:
     - apk add --no-cache curl jq
     - |
@@ -335,6 +384,47 @@ deploy:prod:
         echo "  - Kustomize: ${KUSTOMIZE_PATH}"
         echo "  - Legacy: ${LEGACY_PATH}"
         exit 1
+      fi
+    # Create/Update APISIX route for this application
+    - |
+      echo "Creating APISIX route for ${APP_HOST}..."
+      ROUTE_ID="${CI_PROJECT_NAME}-${ENVIRONMENT}"
+      UPSTREAM_HOST="${CI_PROJECT_NAME}.${NAMESPACE}.svc.cluster.local"
+
+      # Create the route with upstream
+      ROUTE_PAYLOAD=$(cat <<ROUTE_EOF
+      {
+        "uri": "/*",
+        "host": "${APP_HOST}",
+        "plugins": {
+          "proxy-rewrite": {
+            "headers": {
+              "X-Forwarded-Proto": "https",
+              "X-Forwarded-Host": "${APP_HOST}",
+              "X-Forwarded-Port": "443"
+            }
+          }
+        },
+        "upstream": {
+          "type": "roundrobin",
+          "nodes": {
+            "${UPSTREAM_HOST}:80": 1
+          }
+        }
+      }
+      ROUTE_EOF
+      )
+
+      RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${ROUTE_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${ROUTE_PAYLOAD}")
+
+      if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "APISIX route created/updated successfully: ${ROUTE_ID}"
+        echo "App accessible at: https://${APP_HOST}"
+      else
+        echo "Warning: Failed to create APISIX route: $RESPONSE"
       fi
   environment:
     name: production
