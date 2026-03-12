@@ -236,7 +236,7 @@ deploy:dev:
     APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
     APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
     APP_HOST: "dev-${CI_PROJECT_NAME}.service.daitics.local"
-    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local:8080"
+    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local"
   before_script:
     - apk add --no-cache curl jq
     - |
@@ -361,7 +361,7 @@ deploy:prod:
     APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
     APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
     APP_HOST: "${CI_PROJECT_NAME}.service.daitics.local"
-    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local:8080"
+    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local"
   before_script:
     - apk add --no-cache curl jq
     - |
