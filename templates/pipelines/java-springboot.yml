@@ -230,6 +230,7 @@ deploy:dev:
   variables:
     ENVIRONMENT: "development"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local:8080"
   before_script:
     - apk add --no-cache curl jq
     - |
@@ -240,6 +241,10 @@ deploy:dev:
       GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
         ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
       export GITLAB_DEPLOY_TOKEN
+    - |
+      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/argocd | jq -r '.data.data["admin-password"]')
+      export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
     - |
@@ -254,10 +259,25 @@ deploy:dev:
         NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
         sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
-        echo "Deployment updated - ArgoCD will sync"
+        echo "Manifest updated"
       else
         echo "Manifest not found at ${MANIFEST_PATH}"
       fi
+    # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
+    - |
+      echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
+      ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
+        -d "{\"username\":\"admin\",\"password\":\"${ARGOCD_ADMIN_PASSWORD}\"}" | jq -r '.token')
+      if [ -z "$ARGOCD_TOKEN" ] || [ "$ARGOCD_TOKEN" = "null" ]; then
+        echo "ERROR: Failed to authenticate with ArgoCD"
+        exit 1
+      fi
+      SYNC_RESPONSE=$(curl -sf -X POST \
+        "${ARGOCD_SERVER}/api/v1/applications/${CI_PROJECT_NAME}-${ENVIRONMENT}/sync" \
+        -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"prune": true}')
+      echo "ArgoCD sync triggered: $(echo "$SYNC_RESPONSE" | jq -r '.status.sync.status // "initiated"')"
   environment:
     name: development
     url: https://dev-${CI_PROJECT_NAME}.service.daitics.local
@@ -274,6 +294,7 @@ deploy:prod:
   variables:
     ENVIRONMENT: "production"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local:8080"
   before_script:
     - apk add --no-cache curl jq
     - |
@@ -284,6 +305,10 @@ deploy:prod:
       GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
         ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
       export GITLAB_DEPLOY_TOKEN
+    - |
+      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
+        ${VAULT_ADDR}/v1/secret/data/argocd | jq -r '.data.data["admin-password"]')
+      export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
     - |
@@ -298,10 +323,25 @@ deploy:prod:
         NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
         sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
-        echo "Deployment updated - ArgoCD will sync"
+        echo "Manifest updated"
       else
         echo "Manifest not found at ${MANIFEST_PATH}"
       fi
+    # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
+    - |
+      echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
+      ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
+        -d "{\"username\":\"admin\",\"password\":\"${ARGOCD_ADMIN_PASSWORD}\"}" | jq -r '.token')
+      if [ -z "$ARGOCD_TOKEN" ] || [ "$ARGOCD_TOKEN" = "null" ]; then
+        echo "ERROR: Failed to authenticate with ArgoCD"
+        exit 1
+      fi
+      SYNC_RESPONSE=$(curl -sf -X POST \
+        "${ARGOCD_SERVER}/api/v1/applications/${CI_PROJECT_NAME}-${ENVIRONMENT}/sync" \
+        -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"prune": true}')
+      echo "ArgoCD sync triggered: $(echo "$SYNC_RESPONSE" | jq -r '.status.sync.status // "initiated"')"
   environment:
     name: production
     url: https://${CI_PROJECT_NAME}.service.daitics.local
