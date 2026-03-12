@@ -243,7 +243,7 @@ deploy:dev:
       export GITLAB_DEPLOY_TOKEN
     - |
       ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/argocd | jq -r '.data.data["admin-password"]')
+        ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
       export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
@@ -307,7 +307,7 @@ deploy:prod:
       export GITLAB_DEPLOY_TOKEN
     - |
       ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/argocd | jq -r '.data.data["admin-password"]')
+        ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
       export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
