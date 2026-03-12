@@ -285,6 +285,7 @@ deploy:dev:
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
       ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
+        -H "Content-Type: application/json" \
         -d "{\"username\":\"admin\",\"password\":\"${ARGOCD_ADMIN_PASSWORD}\"}" | jq -r '.token')
       if [ -z "$ARGOCD_TOKEN" ] || [ "$ARGOCD_TOKEN" = "null" ]; then
         echo "ERROR: Failed to authenticate with ArgoCD"
@@ -349,6 +350,7 @@ deploy:prod:
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
       ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
+        -H "Content-Type: application/json" \
         -d "{\"username\":\"admin\",\"password\":\"${ARGOCD_ADMIN_PASSWORD}\"}" | jq -r '.token')
       if [ -z "$ARGOCD_TOKEN" ] || [ "$ARGOCD_TOKEN" = "null" ]; then
         echo "ERROR: Failed to authenticate with ArgoCD"
