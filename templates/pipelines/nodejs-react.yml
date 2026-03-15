@@ -321,11 +321,24 @@ deploy:dev:
         -d "${ROUTE_PAYLOAD}")
 
       if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
-        echo "APISIX route created/updated successfully: ${ROUTE_ID}"
-        echo "App accessible at: https://${APP_HOST}"
+        echo "APISIX route created/updated: ${ROUTE_ID}"
       else
         echo "Warning: Failed to create APISIX route: $RESPONSE"
       fi
+
+      # Create HTTP→HTTPS redirect route
+      REDIRECT_ID="${ROUTE_ID}-http-redirect"
+      REDIRECT_RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${REDIRECT_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "{\"uri\":\"/*\",\"host\":\"${APP_HOST}\",\"priority\":10,\"vars\":[[\"scheme\",\"==\",\"http\"]],\"plugins\":{\"redirect\":{\"uri\":\"https://\$host\$request_uri\",\"ret_code\":301}},\"upstream\":{\"type\":\"roundrobin\",\"nodes\":{\"127.0.0.1:1\":1}}}")
+
+      if echo "$REDIRECT_RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "HTTP redirect route created: ${REDIRECT_ID}"
+      else
+        echo "Warning: Failed to create redirect route: $REDIRECT_RESPONSE"
+      fi
+      echo "App accessible at: https://${APP_HOST}"
     # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
@@ -447,11 +460,24 @@ deploy:prod:
         -d "${ROUTE_PAYLOAD}")
 
       if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
-        echo "APISIX route created/updated successfully: ${ROUTE_ID}"
-        echo "App accessible at: https://${APP_HOST}"
+        echo "APISIX route created/updated: ${ROUTE_ID}"
       else
         echo "Warning: Failed to create APISIX route: $RESPONSE"
       fi
+
+      # Create HTTP→HTTPS redirect route
+      REDIRECT_ID="${ROUTE_ID}-http-redirect"
+      REDIRECT_RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${REDIRECT_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "{\"uri\":\"/*\",\"host\":\"${APP_HOST}\",\"priority\":10,\"vars\":[[\"scheme\",\"==\",\"http\"]],\"plugins\":{\"redirect\":{\"uri\":\"https://\$host\$request_uri\",\"ret_code\":301}},\"upstream\":{\"type\":\"roundrobin\",\"nodes\":{\"127.0.0.1:1\":1}}}")
+
+      if echo "$REDIRECT_RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "HTTP redirect route created: ${REDIRECT_ID}"
+      else
+        echo "Warning: Failed to create redirect route: $REDIRECT_RESPONSE"
+      fi
+      echo "App accessible at: https://${APP_HOST}"
     # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
