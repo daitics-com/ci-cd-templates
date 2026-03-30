@@ -6,8 +6,8 @@
 #   - Unit and integration tests
 #   - SonarQube code quality analysis
 #   - Quality gate validation
-#   - Docker image build with Kaniko
-#   - GitOps deployment via ArgoCD
+#   - Docker image build with Kaniko (supports Dockerfile.k8s)
+#   - GitOps deployment via ArgoCD (Kustomize + APISIX route with CORS)
 #
 # Usage in your project's .gitlab-ci.yml:
 #   include:
@@ -17,18 +17,19 @@
 #   variables:
 #     APP_NAME: my-java-app
 #     JAVA_VERSION: "21"
+#     APP_PORT: "50001"
 
 include:
   - local: '/templates/base/stages.yml'
 
-# Global variables
 variables:
   JAVA_VERSION: "21"
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
   MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end --show-version"
-  REGISTRY_HOST: "gitlab:5050"
+  REGISTRY_HOST: "gitlab-registry.service.daitics.local:30443"
+  DOCKERFILE_PATH: "Dockerfile.k8s"
+  APP_PORT: "50001"
 
-# Cache Maven dependencies
 cache:
   key: "${CI_COMMIT_REF_SLUG}-maven"
   paths:
@@ -36,7 +37,7 @@ cache:
     - target/
 
 # =============================================================================
-# BUILD STAGE
+# BUILD
 # =============================================================================
 
 build:
@@ -52,7 +53,7 @@ build:
     expire_in: 1 day
 
 # =============================================================================
-# TEST STAGE
+# TEST
 # =============================================================================
 
 test:unit:
@@ -94,7 +95,7 @@ test:integration:
   allow_failure: true
 
 # =============================================================================
-# CODE QUALITY STAGE
+# CODE QUALITY
 # =============================================================================
 
 sonarqube-scan:
@@ -104,38 +105,34 @@ sonarqube-scan:
     GIT_DEPTH: "0"
   before_script:
     - apt-get update && apt-get install -y curl jq
-
-    # Authenticate with Vault
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-
-    - |
-      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
-      export SONAR_TOKEN
-      echo "SonarQube token retrieved"
+    - >
+      VAULT_TOKEN=$(curl -sk --request POST
+      --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}"
+      ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - >
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+      && export SONAR_TOKEN
+      && echo "SonarQube token retrieved"
   script:
     - echo "Running SonarQube analysis..."
-    - |
-      mvn ${MAVEN_CLI_OPTS} sonar:sonar \
-        -Dsonar.host.url=${SONAR_HOST_URL} \
-        -Dsonar.token=${SONAR_TOKEN} \
-        -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG} \
-        -Dsonar.projectName="${CI_PROJECT_NAME}" \
-        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
-        -Dsonar.sources=src/main/java \
-        -Dsonar.tests=src/test/java \
-        -Dsonar.java.binaries=target/classes \
-        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+    - >
+      mvn ${MAVEN_CLI_OPTS} sonar:sonar
+      -Dsonar.host.url=${SONAR_HOST_URL}
+      -Dsonar.token=${SONAR_TOKEN}
+      -Dsonar.projectKey=${CI_PROJECT_PATH_SLUG}
+      -Dsonar.projectName="${CI_PROJECT_NAME}"
+      -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA}
+      -Dsonar.sources=src/main/java
+      -Dsonar.tests=src/test/java
+      -Dsonar.java.binaries=target/classes
+      -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
     - echo "SonarQube analysis completed"
-    - echo "View results: ${SONAR_HOST_URL}/dashboard?id=${CI_PROJECT_PATH_SLUG}"
   needs:
     - build
     - test:unit
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
 quality-gate:
@@ -143,35 +140,32 @@ quality-gate:
   image: alpine:latest
   before_script:
     - apk add --no-cache curl jq
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-    - |
-      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
-      export SONAR_TOKEN
+    - >
+      VAULT_TOKEN=$(curl -sk --request POST
+      --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}"
+      ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - >
+      SONAR_TOKEN=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/sonarqube | jq -r '.data.data.ci_token')
+      && export SONAR_TOKEN
   script:
     - echo "Checking Quality Gate..."
     - sleep 15
-    - |
-      STATUS=$(curl -sk -u "${SONAR_TOKEN}:" \
-        "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${CI_PROJECT_PATH_SLUG}" \
-        | jq -r '.projectStatus.status')
-      echo "Quality Gate: ${STATUS}"
-      if [ "${STATUS}" != "OK" ] && [ "${STATUS}" != "WARN" ]; then
-        echo "Quality Gate FAILED!"
-        exit 1
-      fi
-      echo "Quality Gate PASSED!"
+    - >
+      STATUS=$(curl -sk -u "${SONAR_TOKEN}:"
+      "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${CI_PROJECT_PATH_SLUG}"
+      | jq -r '.projectStatus.status')
+    - echo "Quality Gate status is ${STATUS}"
+    - if [ "${STATUS}" != "OK" ] && [ "${STATUS}" != "WARN" ]; then echo "Quality Gate FAILED!" && exit 1; fi
+    - echo "Quality Gate PASSED!"
   needs:
     - sonarqube-scan
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
 # =============================================================================
-# PACKAGE STAGE
+# PACKAGE
 # =============================================================================
 
 package:
@@ -179,7 +173,7 @@ package:
   image: maven:3.9-eclipse-temurin-${JAVA_VERSION}
   script:
     - echo "Packaging Spring Boot application..."
-    - mvn ${MAVEN_CLI_OPTS} package -DskipTests
+    - mvn ${MAVEN_CLI_OPTS} package -Dmaven.test.skip=true
     - echo "Application packaged"
     - ls -lh target/*.jar 2>/dev/null || ls -lh target/*.war 2>/dev/null || true
   artifacts:
@@ -188,40 +182,40 @@ package:
       - target/*.war
     expire_in: 7 days
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
 
 build-image:
   stage: package
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
-  variables:
-    IMAGE_TAG: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
-    IMAGE_LATEST: "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest"
   script:
     - echo "Building Docker image with Kaniko"
     - mkdir -p /kaniko/.docker
-    - echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
-    - |
-      /kaniko/executor \
-        --context "${CI_PROJECT_DIR}" \
-        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
-        --destination "${IMAGE_TAG}" \
-        --destination "${IMAGE_LATEST}" \
-        --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-        --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} \
-        --insecure \
-        --skip-tls-verify \
-        --cache=true \
-        --cache-ttl=24h
-    - echo "Image: ${IMAGE_TAG}"
+    - >
+      echo "{\"auths\":{\"${REGISTRY_HOST}\":{\"auth\":\"$(printf "%s:%s"
+      "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}"
+      > /kaniko/.docker/config.json
+    - >
+      /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/${DOCKERFILE_PATH}"
+      --destination "${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
+      --destination "${REGISTRY_HOST}/${CI_PROJECT_PATH}:latest"
+      --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA}
+      --insecure
+      --skip-tls-verify
+      --cache=true
+      --cache-ttl=24h
+    - echo "Image pushed to ${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
   needs:
     - package
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
 
 # =============================================================================
-# DEPLOY STAGE
+# DEPLOY — Development (automatic on dev/develop push)
 # =============================================================================
 
 deploy:dev:
@@ -229,41 +223,105 @@ deploy:dev:
   image: alpine/git:latest
   variables:
     ENVIRONMENT: "development"
+    NAMESPACE: "daitics-development"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
+    APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
+    APP_HOST: "dev-${CI_PROJECT_NAME}.service.daitics.local"
     ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local"
   before_script:
     - apk add --no-cache curl jq
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-    - |
-      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
-      export GITLAB_DEPLOY_TOKEN
-    - |
-      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
-      export ARGOCD_ADMIN_PASSWORD
+    # Vault authentication
+    - >
+      VAULT_TOKEN=$(curl -sk --request POST
+      --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}"
+      ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    # Fetch deploy token
+    - >
+      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
+      && export GITLAB_DEPLOY_TOKEN
+    # Fetch ArgoCD password
+    - >
+      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
+      && export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
-    - |
-      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}" | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
-      git clone "${REPO_URL_WITH_AUTH}" k8s-manifests
-      cd k8s-manifests
+
+    # --- Step 1: Clone k8s-manifests and update image tag ---
+    - >
+      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}"
+      | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
+    - git clone "${REPO_URL_WITH_AUTH}" k8s-manifests && cd k8s-manifests
     - git config user.email "gitlab-ci@daitics.local"
     - git config user.name "GitLab CI"
+    - KUSTOMIZE_PATH="apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}/kustomization.yaml"
+    - LEGACY_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
+    - NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
     - |
-      MANIFEST_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
-      if [ -f "$MANIFEST_PATH" ]; then
-        NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
-        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
+      if [ -f "$KUSTOMIZE_PATH" ]; then
+        echo "Found Kustomize structure at ${KUSTOMIZE_PATH}"
+        cd apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}
+        sed -i 's/newTag: ".*"/newTag: "'"${CI_COMMIT_SHORT_SHA}"'"/' kustomization.yaml
+        echo "Updated kustomization.yaml with tag: ${CI_COMMIT_SHORT_SHA}"
+        cat kustomization.yaml
+        cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
-        echo "Manifest updated"
+      elif [ -f "$LEGACY_PATH" ]; then
+        echo "Found legacy structure at ${LEGACY_PATH}"
+        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${LEGACY_PATH}"
+        git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
       else
-        echo "Manifest not found at ${MANIFEST_PATH}"
+        echo "ERROR: No manifest found at ${KUSTOMIZE_PATH} or ${LEGACY_PATH}" && exit 1
       fi
-    # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
+
+    # --- Step 2: Create APISIX route with CORS + proxy headers ---
+    - ROUTE_ID="${CI_PROJECT_NAME}-${ENVIRONMENT}"
+    - UPSTREAM_HOST="${CI_PROJECT_NAME}.${NAMESPACE}.svc.cluster.local"
+    - |
+      ROUTE_PAYLOAD=$(cat <<ROUTE_EOF
+      {
+        "uri": "/*",
+        "host": "${APP_HOST}",
+        "plugins": {
+          "cors": {
+            "allow_origins": "https://dev-dtx-portal.service.daitics.local,https://portal.service.daitics.local",
+            "allow_methods": "GET,POST,PUT,DELETE,PATCH,OPTIONS",
+            "allow_headers": "Authorization,Content-Type,X-Requested-With",
+            "allow_credential": true,
+            "max_age": 3600
+          },
+          "proxy-rewrite": {
+            "headers": {
+              "X-Real-IP": "\$remote_addr",
+              "X-Forwarded-For": "\$proxy_add_x_forwarded_for",
+              "X-Forwarded-Proto": "\$scheme",
+              "Host": "\$host"
+            }
+          }
+        },
+        "upstream": {
+          "type": "roundrobin",
+          "nodes": {
+            "${UPSTREAM_HOST}:${APP_PORT}": 1
+          }
+        }
+      }
+      ROUTE_EOF
+      )
+      RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${ROUTE_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${ROUTE_PAYLOAD}")
+      if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "APISIX route created: ${ROUTE_ID} -> ${UPSTREAM_HOST}:${APP_PORT}"
+      else
+        echo "Warning: Failed to create APISIX route: $RESPONSE"
+      fi
+      echo "App accessible at: https://${APP_HOST}"
+
+    # --- Step 3: Trigger ArgoCD sync ---
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
       ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
@@ -286,49 +344,112 @@ deploy:dev:
     - build-image
     - quality-gate
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"'
-      when: on_success  # Automatic - no approval
+    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop"'
+      when: on_success
+
+# =============================================================================
+# DEPLOY — Production (manual approval on main/master)
+# =============================================================================
 
 deploy:prod:
   stage: deploy
   image: alpine/git:latest
   variables:
     ENVIRONMENT: "production"
+    NAMESPACE: "daitics-production"
     MANIFEST_REPO_URL: "http://gitlab-webservice-default.gitlab-system.svc.cluster.local:8181/daitics-com/k8s-manifests.git"
+    APISIX_ADMIN_URL: "http://apisix-admin.apisix-system.svc.cluster.local:9180"
+    APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
+    APP_HOST: "${CI_PROJECT_NAME}.service.daitics.local"
     ARGOCD_SERVER: "http://argocd-server.argocd-system.svc.cluster.local"
   before_script:
     - apk add --no-cache curl jq
-    - |
-      VAULT_TOKEN=$(curl -sk --request POST \
-        --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-        ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
-    - |
-      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
-      export GITLAB_DEPLOY_TOKEN
-    - |
-      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token: ${VAULT_TOKEN}" \
-        ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
-      export ARGOCD_ADMIN_PASSWORD
+    - >
+      VAULT_TOKEN=$(curl -sk --request POST
+      --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}"
+      ${VAULT_ADDR}/v1/auth/approle/login | jq -r '.auth.client_token')
+    - >
+      GITLAB_DEPLOY_TOKEN=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/gitlab | jq -r '.data.data.deploy_token')
+      && export GITLAB_DEPLOY_TOKEN
+    - >
+      ARGOCD_ADMIN_PASSWORD=$(curl -sk --header "X-Vault-Token:${VAULT_TOKEN}"
+      ${VAULT_ADDR}/v1/secret/data/cicd/argocd | jq -r '.data.data.admin_password')
+      && export ARGOCD_ADMIN_PASSWORD
   script:
     - echo "Deploying to ${ENVIRONMENT}..."
-    - |
-      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}" | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
-      git clone "${REPO_URL_WITH_AUTH}" k8s-manifests
-      cd k8s-manifests
+
+    # --- Step 1: Clone k8s-manifests and update image tag ---
+    - >
+      REPO_URL_WITH_AUTH=$(echo "${MANIFEST_REPO_URL}"
+      | sed "s|http://|http://deploy:${GITLAB_DEPLOY_TOKEN}@|")
+    - git clone "${REPO_URL_WITH_AUTH}" k8s-manifests && cd k8s-manifests
     - git config user.email "gitlab-ci@daitics.local"
     - git config user.name "GitLab CI"
+    - KUSTOMIZE_PATH="apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}/kustomization.yaml"
+    - LEGACY_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
+    - NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
     - |
-      MANIFEST_PATH="environments/${ENVIRONMENT}/${CI_PROJECT_NAME}/deployment.yaml"
-      if [ -f "$MANIFEST_PATH" ]; then
-        NEW_IMAGE="${REGISTRY_HOST}/${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}"
-        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${MANIFEST_PATH}"
+      if [ -f "$KUSTOMIZE_PATH" ]; then
+        echo "Found Kustomize structure at ${KUSTOMIZE_PATH}"
+        cd apps/${CI_PROJECT_NAME}/overlays/${ENVIRONMENT}
+        sed -i 's/newTag: ".*"/newTag: "'"${CI_COMMIT_SHORT_SHA}"'"/' kustomization.yaml
+        cat kustomization.yaml
+        cd - > /dev/null
         git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
-        echo "Manifest updated"
+      elif [ -f "$LEGACY_PATH" ]; then
+        sed -i "s|image:.*|image: ${NEW_IMAGE}|g" "${LEGACY_PATH}"
+        git add . && git commit -m "Deploy ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} to ${ENVIRONMENT}" && git push
       else
-        echo "Manifest not found at ${MANIFEST_PATH}"
+        echo "ERROR: No manifest found at ${KUSTOMIZE_PATH} or ${LEGACY_PATH}" && exit 1
       fi
-    # Trigger ArgoCD sync (auto-sync is disabled — CI controls deployment)
+
+    # --- Step 2: Create APISIX route with CORS + proxy headers ---
+    - ROUTE_ID="${CI_PROJECT_NAME}-${ENVIRONMENT}"
+    - UPSTREAM_HOST="${CI_PROJECT_NAME}.${NAMESPACE}.svc.cluster.local"
+    - |
+      ROUTE_PAYLOAD=$(cat <<ROUTE_EOF
+      {
+        "uri": "/*",
+        "host": "${APP_HOST}",
+        "plugins": {
+          "cors": {
+            "allow_origins": "https://dtx-portal.service.daitics.local,https://portal.service.daitics.local",
+            "allow_methods": "GET,POST,PUT,DELETE,PATCH,OPTIONS",
+            "allow_headers": "Authorization,Content-Type,X-Requested-With",
+            "allow_credential": true,
+            "max_age": 3600
+          },
+          "proxy-rewrite": {
+            "headers": {
+              "X-Real-IP": "\$remote_addr",
+              "X-Forwarded-For": "\$proxy_add_x_forwarded_for",
+              "X-Forwarded-Proto": "\$scheme",
+              "Host": "\$host"
+            }
+          }
+        },
+        "upstream": {
+          "type": "roundrobin",
+          "nodes": {
+            "${UPSTREAM_HOST}:${APP_PORT}": 1
+          }
+        }
+      }
+      ROUTE_EOF
+      )
+      RESPONSE=$(curl -sk -X PUT "${APISIX_ADMIN_URL}/apisix/admin/routes/${ROUTE_ID}" \
+        -H "X-API-KEY: ${APISIX_ADMIN_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${ROUTE_PAYLOAD}")
+      if echo "$RESPONSE" | jq -e '.key' > /dev/null 2>&1; then
+        echo "APISIX route created: ${ROUTE_ID} -> ${UPSTREAM_HOST}:${APP_PORT}"
+      else
+        echo "Warning: Failed to create APISIX route: $RESPONSE"
+      fi
+      echo "App accessible at: https://${APP_HOST}"
+
+    # --- Step 3: Trigger ArgoCD sync ---
     - |
       echo "Triggering ArgoCD sync for ${CI_PROJECT_NAME}-${ENVIRONMENT}..."
       ARGOCD_TOKEN=$(curl -sf "${ARGOCD_SERVER}/api/v1/session" \
@@ -352,4 +473,4 @@ deploy:prod:
     - quality-gate
   rules:
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
-      when: manual  # Requires approval
+      when: manual
