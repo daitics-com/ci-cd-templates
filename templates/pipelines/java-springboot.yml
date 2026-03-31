@@ -482,7 +482,6 @@ deploy:prod:
     - build-image
     - quality-gate
   rules:
-    # NOTE: Restricted to k8s-migration during migration phase.
-    # TODO: Restore to main/master after migration complete.
-    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
+    # Production deploy only on main/master — never on k8s-migration
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
       when: manual
