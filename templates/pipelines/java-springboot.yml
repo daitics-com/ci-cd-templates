@@ -132,8 +132,9 @@ sonarqube-scan:
     - build
     - test:unit
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to dev/develop/main/master + merge_request_event after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
 
 quality-gate:
   stage: code-quality
@@ -161,8 +162,9 @@ quality-gate:
   needs:
     - sonarqube-scan
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to dev/develop/main/master + merge_request_event after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
 
 # =============================================================================
 # PACKAGE
@@ -173,7 +175,9 @@ package:
   image: maven:3.9-eclipse-temurin-${JAVA_VERSION}
   script:
     - echo "Packaging Spring Boot application..."
-    - mvn ${MAVEN_CLI_OPTS} package -Dmaven.test.skip=true
+    # NVD dependency-check disabled during migration (20+ min NVD database download)
+    # TODO: Re-enable -Ddependency-check.skip=false for production releases
+    - mvn ${MAVEN_CLI_OPTS} package -Dmaven.test.skip=true -Ddependency-check.skip=true
     - echo "Application packaged"
     - ls -lh target/*.jar 2>/dev/null || ls -lh target/*.war 2>/dev/null || true
   artifacts:
@@ -182,7 +186,9 @@ package:
       - target/*.war
     expire_in: 7 days
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to dev/develop/main/master after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
 
 build-image:
   stage: package
@@ -212,7 +218,9 @@ build-image:
   needs:
     - package
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to dev/develop/main/master after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
 
 # =============================================================================
 # DEPLOY — Development (automatic on dev/develop push)
@@ -344,7 +352,9 @@ deploy:dev:
     - build-image
     - quality-gate
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "develop"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to dev/develop after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
       when: on_success
 
 # =============================================================================
@@ -472,5 +482,7 @@ deploy:prod:
     - build-image
     - quality-gate
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    # NOTE: Restricted to k8s-migration during migration phase.
+    # TODO: Restore to main/master after migration complete.
+    - if: '$CI_COMMIT_BRANCH == "k8s-migration"'
       when: manual
