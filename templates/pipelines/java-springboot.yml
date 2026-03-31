@@ -82,7 +82,9 @@ test:integration:
   image: maven:3.9-eclipse-temurin-${JAVA_VERSION}
   script:
     - echo "Running integration tests..."
-    - mvn ${MAVEN_CLI_OPTS} verify -DskipUnitTests
+    # NVD dependency-check disabled during migration (20+ min download)
+    # TODO: Re-enable -Ddependency-check.skip=false for production
+    - mvn ${MAVEN_CLI_OPTS} verify -DskipUnitTests -Ddependency-check.skip=true
     - echo "Integration tests completed"
   artifacts:
     when: always
